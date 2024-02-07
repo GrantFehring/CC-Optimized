@@ -1,0 +1,330 @@
+---
+title: "Commander Codex Project"
+author: "grant fehring"
+date: "2023-11-14"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r library referencing}
+library(httr)
+library(jsonlite)
+library(stringr)
+library(zoo)
+library(purrr)
+library(tidyverse)
+```
+
+```{r data importing}
+# import json file using package
+CCjson = jsonlite::fromJSON("https://storage.googleapis.com/legend-tutor.appspot.com/daily.json")
+```
+
+
+```{r api link creation}
+# load all card names into a vector
+top500 = names(CCjson$cards)
+# create a variable bc there are 498 cards and that might change
+n = length(CCjson$cards)
+
+# empty vector to fill in loop
+ids = rep(NA, n)
+for (i in 1:n) {
+  # extract ith name to make next line easier to read
+  temp = top500[i]
+  # place ith id into id vector based on the name of the ith card
+  ids[i] = CCjson$cards[[temp]]
+}
+
+# another loop to combine the two into links
+links = rep(NA, n)
+for (i in 1:n) {
+  links[i] = paste0("https://api.scryfall.com/cards/", ids[i])
+}
+```
+
+
+```{r df creation from links}
+# empty dataframe with columns for each category we'll make later
+df = data.frame(matrix(ncol = 6, nrow = n))
+
+# loop progressively adds rows to 
+for (i in 1:n) {
+  # gradually turn link into a df
+  temp = GET(links[i])
+  api_data = content(temp, "text", encoding = "UTF-8")
+  api_df = fromJSON(api_data)
+  
+  # create each row 
+  name = top500[i]
+  # compress a list to one string to make color length 1
+  color = paste(api_df$color_identity, collapse = '')
+  # nice and easy
+  cmc = api_df$cmc
+  # extract only month and year of date, since that is what CC uses
+  date = substr(api_df$released_at, start = 1, stop = 7)
+  
+  # pt prep for * in power or toughness
+  if (identical(api_df$power, "*")) {api_df$power = 0}
+  if (identical(api_df$toughness, "*")) {api_df$toughness = 0}
+  # pt basic power + toughness
+  pt = as.numeric(api_df$power) + as.numeric(api_df$toughness)
+  # pt for double-faced cards
+  if (identical(pt, numeric(0))) {
+    pt = as.numeric(api_df$card_faces$power[1]) + 
+      as.numeric(api_df$card_faces$toughness[1])
+  }
+  # pt for planeswalkers
+  if (identical(pt, numeric(0))) {
+    pt = 0
+  }
+  
+  # type extracted as one string, done in the same way as CC
+  type = str_match(api_df$type_line,
+                             # extracts between dashes or after the first dash
+                             "(?:— )(.+?)(?: — |$)")[,2]
+  
+  # combine values into one vector
+  info_vec = c(name, color, cmc, date, pt, type)
+  # replace ith row of originally empty df with new vector
+  df[i,] = info_vec
+}
+# set column names manually
+colnames(df) = c("name","color","cmc","date","pt","type")
+# change data types for non-character columns
+df$cmc = as.numeric(df$cmc)
+df$pt = as.numeric(df$pt)
+# as.yearmon comes from the zoo package
+df$date = as.yearmon(df$date)
+
+# I needed to create this copy at some point to use for filtering later so I did it here
+solutions_df = df
+```
+
+```{r}
+# list of options for each value; used in next function
+result_options = list(
+  color_options = c('G','Y','B'),
+  cmc_options = c('D','G','U'),
+  date_options = c('D','G','U'),
+  pt_options = c('D','G','U'),
+  type_options = c('G','Y','B')
+)
+
+# expand_grid creates matrix of all possible combinations
+# pmap_chr turns that matrix into a vector of strings
+all_options = expand_grid(!!!result_options) %>%
+  pmap_chr(~ paste(..., sep = ""))
+```
+
+
+```{r create column filter functions}
+filter_color = function(solutions_df, cardname, result_color) {
+  # extract color of guess for easy referencing
+  guessed_color = df[which(df$name == cardname), "color"]
+  
+  if (result_color == "Y") {
+    # grepl uses regex to extract matches with at least one color
+    solutions_df = solutions_df[grepl(paste0("[", guessed_color, "]"),
+                                      solutions_df$color), ]
+    # separately remove all exact matches, as those would also be yellow
+    solutions_df = filter(solutions_df, color != guessed_color)
+    
+  } else if (result_color == "B") {
+    # skip colorless results because regex can't handle "" as a pattern
+    # NOTE: we didn't do this for a Y result because colorless cannot be Y
+    if (guessed_color != "") {
+      # opposite of Y to remove all matches with at least one color
+      solutions_df = solutions_df[!grepl(paste0("[", guessed_color, "]"),
+                                         solutions_df$color), ]
+    } else {
+      # separately remove colorless results
+      solutions_df = filter(solutions_df, color != "")
+    }
+    
+  } else if (result_color == "G") {
+    # select only solutions with the exact guessed color
+    solutions_df = filter(solutions_df, color == guessed_color)
+    
+  } else {stop("Result for color must be G, Y, or B.")}
+  return(solutions_df)
+}
+
+filter_cmc = function(solutions_df, cardname, result_cmc) {
+  guessed_cmc = df[which(df$name == cardname), "cmc"]
+  
+  # filter by up, down, or green cmc
+  if (result_cmc == "U") {
+    solutions_df = filter(solutions_df, cmc > guessed_cmc)
+  } else if (result_cmc == "D") {
+    solutions_df = filter(solutions_df, cmc < guessed_cmc)
+  } else if (result_cmc == "G") {
+    solutions_df = filter(solutions_df, cmc == guessed_cmc)
+  } else {stop("Result for cmc must be U, D, or G")}
+  return(solutions_df)
+}
+
+# exact same as cmc
+filter_date = function(solutions_df, cardname, result_date) {
+  guessed_date = df[which(df$name == cardname), "date"]
+  
+  if (result_date == "U") {
+    solutions_df = filter(solutions_df, date > guessed_date)
+  } else if (result_date == "D") {
+    solutions_df = filter(solutions_df, date < guessed_date)
+  } else if (result_date == "G") {
+    solutions_df = filter(solutions_df, date == guessed_date)
+  } else {stop("Result for date must be U, D, or G")}
+  return(solutions_df)
+}
+
+# exact same again
+filter_pt = function(solutions_df, cardname, result_pt) {
+  guessed_pt = df[which(df$name == cardname), "pt"]
+  
+  if (result_pt == "U") {
+    solutions_df = filter(solutions_df, pt > guessed_pt)
+  } else if (result_pt == "D") {
+    solutions_df = filter(solutions_df, pt < guessed_pt)
+  } else if (result_pt == "G") {
+    solutions_df = filter(solutions_df, pt == guessed_pt)
+  } else {stop("Result for pt must be U, D, or G")}
+  return(solutions_df)
+}
+
+filter_type = function(solutions_df, cardname, result_type) {
+  guessed_type = df[which(df$name == cardname), "type"]
+  # split type into vector with one entry per word
+  guessed_type_split = unlist(str_split(guessed_type, "\\s+"))
+  # regex pattern to find any match for at least one word
+  pattern = paste0("\\b(", paste(guessed_type_split, collapse = "|"), ")\\b")
+
+  if (result_type == "B") {
+    # filter OUT all matches for at least one type
+    solutions_df = filter(solutions_df, !str_detect(type, pattern))
+    
+  } else if (result_type == "Y") {
+    # keep all matches for at least one type
+    solutions_df = filter(solutions_df, str_detect(type, pattern))
+    # eliminate any exact matches
+    solutions_df = filter(solutions_df, type != guessed_type)
+    
+  } else if (result_type == "G") {
+    # select only solutions with exact guessed type
+    solutions_df = filter(solutions_df, type == guessed_type)
+    
+  } else {stop("Result for type must be G, Y, or B.")}
+  return(solutions_df)
+}
+```
+
+
+```{r combine filter functions}
+  left_after_guess = function(cardname, results) {
+  ## return error if improperly formatted
+  if (!(cardname %in% top500)) {
+    stop("cardname must be the exact name of a valid CC guess. (front name only for 2-sided)")
+  }
+  if (!(results %in% all_options)) {
+    stop("results must be formatted as 5 capital letters representing the results of the guess. Each letter has 3 available options. 1st and 5th: G (green) Y (yellow) B (black) 2nd, 3rd, and 4th: U (up) G (green) D (down) ex. YUDDB")
+  }
+    solutions_df = filter_color(solutions_df, cardname, substr(results,1,1)) %>%
+  filter_cmc(cardname, substr(results,2,2)) %>%
+  filter_date(cardname, substr(results,3,3)) %>%
+  filter_pt(cardname, substr(results,4,4)) %>%
+  filter_type(cardname, substr(results,5,5))
+  
+  # allow function to either alter global env or not
+    return(solutions_df)
+}
+```
+
+
+```{r function for best guess}
+# create df to be filled with average # of guesses removed
+avg_eliminated = data.frame(name = df$name, avg = rep(NA, 498))
+best_guess = function(
+    guess1 = NULL, result1 = NULL, guess2 = NULL, result2 = NULL, 
+    guess3 = NULL, result3 = NULL, guess4 = NULL, result4 = NULL, 
+    guess5 = NULL, result5 = NULL, guess6 = NULL, result6 = NULL) {
+  # reset solutions df
+  solutions_df <<- df
+  
+  # vectorize guesses and results
+  guesses <- c(guess1, guess2, guess3, guess4, guess5, guess6)
+  results <- c(result1, result2, result3, result4, result5, result6)
+  # Filter possible answers based on previous guesses using vectorized operation
+  for (i in seq_along(guesses)) {
+    if (!is.null(guesses[i]) && !is.null(results[i])) {
+      solutions_df = left_after_guess(guesses[i], results[i])
+    }
+  }
+  if (nrow(solutions_df) <= 2) {
+    return(solutions_df)
+  }
+  # find best guess based on which removes most solutions on average
+  for (i in 1:498) {
+    # extract guess info
+    guess_info = df[i,]
+    # create variable/reset it for the coming j loop
+    eliminated_rows = 0
+    for (j in 1:nrow(solutions_df)) {
+      # extract answer info
+      answer_info = solutions_df[j,]
+      # filter dfs made in last block based on i and j and extract the result
+      color_result = case_when(
+                     guess_info[[2]] == answer_info[[2]] ~ "G",
+                     !any(strsplit(as.character(
+                              guess_info[[2]]), "")[[1]] %in% 
+                            strsplit(as.character(
+                              answer_info[[2]]), "")[[1]]) ~ "B",
+                     TRUE ~ "Y"
+                   )
+      cmc_result = case_when(
+                     guess_info[[3]] == answer_info[[3]] ~ "G",
+                     guess_info[[3]] > answer_info[[3]] ~ "D",
+                     TRUE ~ "U"
+                   )
+      date_result = case_when(
+                     guess_info[[4]] == answer_info[[4]] ~ "G",
+                     guess_info[[4]] > answer_info[[4]] ~ "D",
+                     TRUE ~ "U"
+                   )
+      pt_result = case_when(
+                     guess_info[[5]] == answer_info[[5]] ~ "G",
+                     guess_info[[5]] > answer_info[[5]] ~ "D",
+                     TRUE ~ "U"
+                   )
+      type_result = case_when(
+                     guess_info[[6]] == answer_info[[6]] ~ "G",
+                     !any(strsplit(as.character(
+                         guess_info[[6]]), " ")[[1]] %in%
+                       strsplit(as.character(
+                         answer_info[[6]]), " ")[[1]]) ~ "B",
+                     TRUE ~ "Y"
+                   )
+      # combine result letters
+      full_result = paste0(color_result, cmc_result, date_result,
+                           pt_result, type_result)
+      
+      # keep adding in number of rows eliminated
+      eliminated_rows = eliminated_rows + nrow(solutions_df) -
+        nrow(left_after_guess(guess_info[[1]], full_result))
+    }
+    # record avg number of solutions eliminated and then loop again
+    avg_eliminated[i,2] = eliminated_rows/nrow(solutions_df)
+  }
+  # top 5 results for most solutions eliminated
+  slice_max(avg_eliminated, avg,
+            # make sure we don't run into an error when n is less than 5
+            n = (min(5, nrow(avg_eliminated))),
+            with_ties = FALSE) %>%
+    
+    # output df of best guesses and their avg number of solutions eliminated
+    print()
+}
+```
+
+

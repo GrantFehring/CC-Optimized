@@ -19,7 +19,7 @@ library(tidyverse)
 
 ```{r data importing}
 # import json file using package
-CCjson = jsonlite::fromJSON("https://storage.googleapis.com/legend-tutor.appspot.com/daily.json")
+CCjson = fromJSON("https://storage.googleapis.com/legend-tutor.appspot.com/daily.json")
 ```
 
 
@@ -248,13 +248,13 @@ avg_eliminated = data.frame(name = df$name, avg = rep(NA, 498))
 best_guess = function(
     guess1 = NULL, result1 = NULL, guess2 = NULL, result2 = NULL, 
     guess3 = NULL, result3 = NULL, guess4 = NULL, result4 = NULL, 
-    guess5 = NULL, result5 = NULL, guess6 = NULL, result6 = NULL) {
+    guess5 = NULL, result5 = NULL) {
   # reset solutions df
   solutions_df <<- df
   
   # vectorize guesses and results
-  guesses <- c(guess1, guess2, guess3, guess4, guess5, guess6)
-  results <- c(result1, result2, result3, result4, result5, result6)
+  guesses <- c(guess1, guess2, guess3, guess4, guess5)
+  results <- c(result1, result2, result3, result4, result5)
   # Filter possible answers based on previous guesses using vectorized operation
   for (i in seq_along(guesses)) {
     if (!is.null(guesses[i]) && !is.null(results[i])) {

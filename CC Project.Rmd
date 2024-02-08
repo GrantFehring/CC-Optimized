@@ -12,7 +12,7 @@ output:
 library(httr)
 library(jsonlite)
 library(stringr)
-library(zoo)
+library(lubridate)
 library(purrr)
 library(tidyverse)
 ```
@@ -63,8 +63,8 @@ for (i in 1:n) {
   color = paste(api_df$color_identity, collapse = '')
   # nice and easy
   cmc = api_df$cmc
-  # extract only month and year of date, since that is what CC uses
-  date = substr(api_df$released_at, start = 1, stop = 7)
+  # full date in year-mon-day format
+  date = api_df$released_at
   
   # pt prep for * in power or toughness
   if (identical(api_df$power, "*")) {api_df$power = 0}
@@ -96,8 +96,8 @@ colnames(df) = c("name","color","cmc","date","pt","type")
 # change data types for non-character columns
 df$cmc = as.numeric(df$cmc)
 df$pt = as.numeric(df$pt)
-# as.yearmon comes from the zoo package
-df$date = as.yearmon(df$date)
+# ymd comes from the zoo package
+df$date = ymd(df$date)
 
 # I needed to create this copy at some point to use for filtering later so I did it here
 solutions_df = df
@@ -230,14 +230,34 @@ filter_type = function(solutions_df, cardname, result_type) {
   if (!(results %in% all_options)) {
     stop("results must be formatted as 5 capital letters representing the results of the guess. Each letter has 3 available options. 1st and 5th: G (green) Y (yellow) B (black) 2nd, 3rd, and 4th: U (up) G (green) D (down) ex. YUDDB")
   }
+    # filter based on each 
     solutions_df = filter_color(solutions_df, cardname, substr(results,1,1)) %>%
   filter_cmc(cardname, substr(results,2,2)) %>%
   filter_date(cardname, substr(results,3,3)) %>%
   filter_pt(cardname, substr(results,4,4)) %>%
   filter_type(cardname, substr(results,5,5))
-  
   # allow function to either alter global env or not
     return(solutions_df)
+}
+```
+
+
+```{r function for current solutions}
+# I want a function to work with the same inputs as best_guess
+current_solutions = function(
+    guess1 = NULL, result1 = NULL, guess2 = NULL, result2 = NULL, 
+    guess3 = NULL, result3 = NULL, guess4 = NULL, result4 = NULL, 
+    guess5 = NULL, result5 = NULL) {
+  # reset solutions df
+  solutions_df <<- df
+  # vectorize guesses and results for more readable loops
+  guesses <- c(guess1, guess2, guess3, guess4, guess5)
+  results <- c(result1, result2, result3, result4, result5)
+  # Filter possible answers based on previous guesses using vectorized operation
+  for (i in seq_along(guesses)) {
+    solutions_df <<- left_after_guess(guesses[i], results[i])
+  }
+  return(solutions_df)
 }
 ```
 
@@ -249,18 +269,11 @@ best_guess = function(
     guess1 = NULL, result1 = NULL, guess2 = NULL, result2 = NULL, 
     guess3 = NULL, result3 = NULL, guess4 = NULL, result4 = NULL, 
     guess5 = NULL, result5 = NULL) {
-  # reset solutions df
-  solutions_df <<- df
+  # obtain currently possible solutions
+  solutions_df = current_solutions(guess1, result1, guess2, result2, 
+    guess3, result3, guess4, result4, guess5, result5)
   
-  # vectorize guesses and results
-  guesses <- c(guess1, guess2, guess3, guess4, guess5)
-  results <- c(result1, result2, result3, result4, result5)
-  # Filter possible answers based on previous guesses using vectorized operation
-  for (i in seq_along(guesses)) {
-    if (!is.null(guesses[i]) && !is.null(results[i])) {
-      solutions_df = left_after_guess(guesses[i], results[i])
-    }
-  }
+  # no calculation necessary if there are 2 or less options
   if (nrow(solutions_df) <= 2) {
     return(solutions_df)
   }
@@ -326,5 +339,3 @@ best_guess = function(
     print()
 }
 ```
-
-
